@@ -211,8 +211,9 @@ class App(tk.Tk):
             self.log(f"Excel nenalezen: {excel_path}")
             return
 
+        require_structure = (sort_choice == "1")
         try:
-            mapping = get_mapping_from_excel(excel_path, require_structure=True)
+            mapping = get_mapping_from_excel(excel_path, require_structure=require_structure)
             self.log(f"Načten Excel: {excel_path}")
         except Exception as e:
             messagebox.showerror("Chyba při načítání Excelu", str(e))
