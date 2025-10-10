@@ -7,6 +7,8 @@ from tkinter import ttk, filedialog, messagebox
 from datetime import datetime
 import re
 
+#test
+
 # --- Cesty ---
 SOURCE_PATH_ORIGINAL    = r"\\NAS\spolecne\1. PRODUKTOVÉ FOTKY\AKTUÁLNÍ"
 SOURCE_PATH_PROMO_FOTO  = r"\\NAS\spolecne\00 - PROMO FOTOGRAFIE A VIDEA\fotky"
