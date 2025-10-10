@@ -5,6 +5,7 @@ import pandas as pd
 import tkinter as tk
 from openpyxl import Workbook, load_workbook
 from datetime import datetime
+import re
 
 SOURCE_PATH_ORIGINAL    = r"\\NAS\spolecne\1. PRODUKTOVÉ FOTKY\AKTUÁLNÍ"
 SOURCE_PATH_PROMO_FOTO  = r"\\NAS\spolecne\00 - PROMO FOTOGRAFIE A VIDEA\fotky"
@@ -13,7 +14,6 @@ SOURCE_PATH_PROMO_VIDEA = r"\\NAS\spolecne\00 - PROMO FOTOGRAFIE A VIDEA\videa"
 # --- Funkce pro logování ---
 def setup_logger(script_dir):
     log_file = os.path.join(script_dir, "vypis konzole.txt")
-    # Smažeme starý log, pokud existuje
     if os.path.exists(log_file):
         os.remove(log_file)
 
@@ -25,8 +25,7 @@ def setup_logger(script_dir):
             f.write(line + "\n")
     return log
 
-
-# --- Ostatní funkce zůstávají stejné ---
+# --- Načtení Excelu ---
 def get_mapping_from_excel(excel_path, require_structure=True):
     df = pd.read_excel(excel_path)
     col_kod = col_znacka = col_kategorie = None
@@ -48,7 +47,6 @@ def get_mapping_from_excel(excel_path, require_structure=True):
         kod = str(row[col_kod]).strip()
         znacka = str(row[col_znacka]).strip() if col_znacka and pd.notna(row[col_znacka]) else None
         kategorie = str(row[col_kategorie]).strip() if col_kategorie and pd.notna(row[col_kategorie]) else None
-
         if kod:
             if require_structure:
                 mapping[kod] = (znacka, kategorie)
@@ -56,6 +54,72 @@ def get_mapping_from_excel(excel_path, require_structure=True):
                 mapping[kod] = (None, None)
     return mapping
 
+# --- Kopírování fotek podle produktů z Excelu ---
+def copy_photos_by_excel(source_dir, dest_dir, mapping, log, flat_structure=False, root_mode=False):
+    os.makedirs(dest_dir, exist_ok=True)
+    exts = [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tif", ".tiff",
+            ".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv"]
+    copied_count = 0
+
+    # Připrav mapování v malých písmenech pro kontrolu, ale zachovej původní názvy pro složky
+    mapping_lower = {str(k).strip().lower(): v for k, v in mapping.items()}
+
+    for root, _, files in os.walk(source_dir):
+        for fn in files:
+            if not any(fn.lower().endswith(ext) for ext in exts):
+                continue
+
+            name_no_ext = os.path.splitext(fn)[0].strip()
+            parts = [p.strip() for p in re.split(r",", name_no_ext) if p.strip()]
+            detected_products = []
+
+            # extrahuj jednotlivé produkty z názvu fotky
+            for part in parts:
+                clean = re.sub(r"\([^)]*\)", "", part).strip()
+                if clean:
+                    detected_products.append(clean)
+
+            if not detected_products:
+                continue
+
+            # kontrola existence všech produktů v Excelu
+            all_in_excel = all(prod.lower() in mapping_lower for prod in detected_products)
+            if not all_in_excel:
+                log(f"Přeskočeno (ne všechny produkty v Excelu): {fn}")
+                continue
+
+            # --- vytvoření výstupní cesty ---
+            src = os.path.join(root, fn)
+            main_product = detected_products[0]
+            znacka, kategorie = mapping_lower.get(main_product.lower(), (None, None))
+
+            if root_mode:
+                out_dir = dest_dir
+            elif flat_structure:
+                out_dir = os.path.join(dest_dir, main_product)
+            else:
+                # použij originální zápis (velká písmena podle Excelu)
+                original_product = next((k for k in mapping.keys() if k.strip().lower() == main_product.lower()), main_product)
+                if znacka and kategorie:
+                    out_dir = os.path.join(dest_dir, znacka, kategorie, original_product)
+                elif znacka:
+                    out_dir = os.path.join(dest_dir, znacka, original_product)
+                elif kategorie:
+                    out_dir = os.path.join(dest_dir, kategorie, original_product)
+                else:
+                    out_dir = os.path.join(dest_dir, original_product)
+
+            os.makedirs(out_dir, exist_ok=True)
+            dst = os.path.join(out_dir, fn)
+            shutil.copy2(src, dst)
+            copied_count += 1
+            log(f"Zkopírován soubor: {fn} -> {out_dir}")
+
+    log(f"Celkem zkopírováno {copied_count} souborů.")
+    if copied_count == 0:
+        log("Nebyl nalezen žádný odpovídající soubor.")
+
+# --- Kopírování složek podle Excelu (původní) ---
 def copy_first_media(src_dir, dest_dir):
     exts = [".jpg",".jpeg",".png",".gif",".bmp",".tif",".tiff",
             ".mp4",".avi",".mov",".mkv",".wmv",".flv"]
@@ -100,6 +164,7 @@ def copy_folders_with_mapping(source_path, dest_path, mapping, copy_mode, flat_s
                 unfound.remove(folder)
     return unfound
 
+# --- Smazání obsahu složky ---
 def delete_folder_contents_safe(folder_path, errors_file_path, log=None):
     if not os.path.isdir(folder_path):
         return
@@ -117,6 +182,7 @@ def delete_folder_contents_safe(folder_path, errors_file_path, log=None):
             with open(errors_file_path, 'a', encoding='utf-8') as ef:
                 ef.write(f"Chyba při mazání '{path}': {e}\n")
 
+# --- Hlavní část ---
 def main():
     if getattr(sys, 'frozen', False):
         script_dir = os.path.dirname(sys.executable)
@@ -127,17 +193,14 @@ def main():
     errors_file = os.path.join(script_dir, "delete_errors.txt")
     if os.path.exists(errors_file):
         os.remove(errors_file)
-
     log("Spuštěn skript.")
 
     while True:
-        print("Zvolte režim kopírování:\n 1 - Celé složky\n 2 - Jen první soubor")
+        print("Zvolte režim:\n 1 - Kopírovat celé složky\n 2 - Kopírovat první soubor\n 3 - Kopírovat fotky podle produktů z Excelu")
         choice = input("Číslo: ").strip()
-        if choice in ("1", "2"):
-            copy_mode = "all" if choice == "1" else "first"
+        if choice in ("1", "2", "3"):
             break
-        else:
-            print("Neplatná volba. Zadejte 1 nebo 2.\n")
+        print("Neplatná volba. Zadejte 1, 2 nebo 3.\n")
 
     while True:
         print("\nZdroj:\n 1 - Promo fotky\n 2 - Promo videa\n 3 - Vybrat složku dle vlastního výběru\n 4 - Aktuální produktové fotky")
@@ -156,23 +219,12 @@ def main():
             if chosen:
                 source_path = chosen
                 break
-            else:
-                print("Nevybrána žádná složka. Zkuste to znovu.\n")
+            print("Nevybrána žádná složka. Zkuste to znovu.\n")
         elif sc == "4":
             source_path = SOURCE_PATH_ORIGINAL
             break
         else:
             print("Neplatná volba. Zadejte 1, 2, 3 nebo 4.\n")
-
-    while True:
-        print("\nChcete třídit produkty podle struktury?\n 1 - Ano\n 2 - Ne\n 3 - Všechny do root složky")
-        flat = input("Zadejte číslo: ").strip()
-        if flat in ("1","2","3"):
-            flat_structure = (flat == "2")
-            root_mode = (flat == "3")
-            break
-        else:
-            print("Neplatná volba. Zadejte 1, 2 nebo 3.\n")
 
     dest_path = os.path.join(script_dir, "foto_folders")
     if os.path.isdir(dest_path):
@@ -184,21 +236,40 @@ def main():
     if not os.path.isfile(excel_path):
         log(f"Excel nenalezen: {excel_path}")
         sys.exit(1)
+
     try:
-        require_structure = (flat == "1")
-        mapping = get_mapping_from_excel(excel_path, require_structure=require_structure)
+        mapping = get_mapping_from_excel(excel_path, require_structure=True)
         log(f"Načten excel: {excel_path}")
     except Exception as e:
         log(f"Chyba při načítání Excelu: {e}")
         sys.exit(1)
 
-    unfound = copy_folders_with_mapping(source_path, dest_path, mapping, copy_mode, flat_structure, root_mode, log=log)
-    if unfound:
-        uf = os.path.join(script_dir, "unfound_folders.txt")
-        with open(uf, "w", encoding="utf-8") as f:
-            for k in unfound:
-                f.write(k + "\n")
-        log(f"Některé složky nebyly nalezeny. Seznam: {uf}")
+    while True:
+        print("\nChcete třídit podle struktury?\n 1 - Ano\n 2 - Ne\n 3 - Vše do root složky")
+        flat = input("Zadejte číslo: ").strip()
+        if flat in ("1", "2", "3"):
+            flat_structure = (flat == "2")
+            root_mode = (flat == "3")
+            break
+        print("Neplatná volba. Zadejte 1, 2 nebo 3.\n")
+
+    if choice == "3":
+        copy_photos_by_excel(
+            source_path, dest_path, mapping, log,
+            flat_structure=flat_structure, root_mode=root_mode
+        )
+    else:
+        copy_mode = "all" if choice == "1" else "first"
+        unfound = copy_folders_with_mapping(
+            source_path, dest_path, mapping,
+            copy_mode, flat_structure, root_mode, log=log
+        )
+        if unfound:
+            uf = os.path.join(script_dir, "unfound_folders.txt")
+            with open(uf, "w", encoding="utf-8") as f:
+                for k in unfound:
+                    f.write(k + "\n")
+            log(f"Některé složky nebyly nalezeny. Seznam: {uf}")
 
     log("Hotovo.")
 
