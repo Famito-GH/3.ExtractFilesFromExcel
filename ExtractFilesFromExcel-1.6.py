@@ -3,26 +3,27 @@ import sys
 import shutil
 import pandas as pd
 import tkinter as tk
-from openpyxl import Workbook, load_workbook
+from tkinter import ttk, filedialog, messagebox
 from datetime import datetime
 import re
 
+# --- Cesty ---
 SOURCE_PATH_ORIGINAL    = r"\\NAS\spolecne\1. PRODUKTOVÉ FOTKY\AKTUÁLNÍ"
 SOURCE_PATH_PROMO_FOTO  = r"\\NAS\spolecne\00 - PROMO FOTOGRAFIE A VIDEA\fotky"
 SOURCE_PATH_PROMO_VIDEA = r"\\NAS\spolecne\00 - PROMO FOTOGRAFIE A VIDEA\videa"
 
-# --- Funkce pro logování ---
 def setup_logger(script_dir):
     log_file = os.path.join(script_dir, "vypis konzole.txt")
     if os.path.exists(log_file):
         os.remove(log_file)
 
     def log(msg):
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        line = f"[{timestamp}] {msg}"
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        line = f"[{ts}] {msg}"
         print(line)
-        with open(log_file, 'a', encoding='utf-8') as f:
+        with open(log_file, "a", encoding="utf-8") as f:
             f.write(line + "\n")
+
     return log
 
 # --- Načtení Excelu ---
@@ -32,7 +33,7 @@ def get_mapping_from_excel(excel_path, require_structure=True):
 
     for col in df.columns:
         n = col.strip().lower()
-        if "kód" in n and not col_kod:        col_kod = col
+        if "kód" in n and not col_kod: col_kod = col
         elif "značka" in n and not col_znacka: col_znacka = col
         elif "kategorie" in n and not col_kategorie: col_kategorie = col
 
@@ -40,7 +41,7 @@ def get_mapping_from_excel(excel_path, require_structure=True):
         raise ValueError("Excel musí obsahovat sloupec s kódem produktu.")
 
     if require_structure and not (col_znacka and col_kategorie):
-        raise ValueError("Pro třídění podle struktury Excel musí mít i sloupce Značka a Kategorie.")
+        raise ValueError("Excel musí obsahovat i sloupce Značka a Kategorie.")
 
     mapping = {}
     for _, row in df.iterrows():
@@ -48,20 +49,16 @@ def get_mapping_from_excel(excel_path, require_structure=True):
         znacka = str(row[col_znacka]).strip() if col_znacka and pd.notna(row[col_znacka]) else None
         kategorie = str(row[col_kategorie]).strip() if col_kategorie and pd.notna(row[col_kategorie]) else None
         if kod:
-            if require_structure:
-                mapping[kod] = (znacka, kategorie)
-            else:
-                mapping[kod] = (None, None)
+            mapping[kod] = (znacka, kategorie)
     return mapping
 
-# --- Kopírování fotek podle produktů z Excelu ---
-def copy_photos_by_excel(source_dir, dest_dir, mapping, log, flat_structure=False, root_mode=False):
-    os.makedirs(dest_dir, exist_ok=True)
-    exts = [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tif", ".tiff",
-            ".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv"]
-    copied_count = 0
 
-    # Připrav mapování v malých písmenech pro kontrolu, ale zachovej původní názvy pro složky
+# --- Kopírování souborů podle Excelu ---
+def copy_photos_by_excel(source_dir, dest_dir, mapping, flat_structure=False, root_mode=False, log=None):
+    os.makedirs(dest_dir, exist_ok=True)
+    exts = [".jpg",".jpeg",".png",".gif",".bmp",".tif",".tiff",
+            ".mp4",".avi",".mov",".mkv",".wmv",".flv"]
+    copied_count = 0
     mapping_lower = {str(k).strip().lower(): v for k, v in mapping.items()}
 
     for root, _, files in os.walk(source_dir):
@@ -71,35 +68,26 @@ def copy_photos_by_excel(source_dir, dest_dir, mapping, log, flat_structure=Fals
 
             name_no_ext = os.path.splitext(fn)[0].strip()
             parts = [p.strip() for p in re.split(r",", name_no_ext) if p.strip()]
-            detected_products = []
-
-            # extrahuj jednotlivé produkty z názvu fotky
-            for part in parts:
-                clean = re.sub(r"\([^)]*\)", "", part).strip()
-                if clean:
-                    detected_products.append(clean)
-
+            detected_products = [re.sub(r"\([^)]*\)", "", p).strip() for p in parts if p.strip()]
             if not detected_products:
+                log(f"Přeskočeno (nelze detekovat produkty): {fn}")
                 continue
 
-            # kontrola existence všech produktů v Excelu
             all_in_excel = all(prod.lower() in mapping_lower for prod in detected_products)
             if not all_in_excel:
-                log(f"Přeskočeno (ne všechny produkty v Excelu): {fn}")
+                log(f"Přeskočeno (produkt nenalezen v Excelu): {fn}")
                 continue
 
-            # --- vytvoření výstupní cesty ---
             src = os.path.join(root, fn)
             main_product = detected_products[0]
             znacka, kategorie = mapping_lower.get(main_product.lower(), (None, None))
+            original_product = next((k for k in mapping.keys() if k.strip().lower() == main_product.lower()), main_product)
 
             if root_mode:
                 out_dir = dest_dir
             elif flat_structure:
-                out_dir = os.path.join(dest_dir, main_product)
+                out_dir = os.path.join(dest_dir, original_product)
             else:
-                # použij originální zápis (velká písmena podle Excelu)
-                original_product = next((k for k in mapping.keys() if k.strip().lower() == main_product.lower()), main_product)
                 if znacka and kategorie:
                     out_dir = os.path.join(dest_dir, znacka, kategorie, original_product)
                 elif znacka:
@@ -110,16 +98,13 @@ def copy_photos_by_excel(source_dir, dest_dir, mapping, log, flat_structure=Fals
                     out_dir = os.path.join(dest_dir, original_product)
 
             os.makedirs(out_dir, exist_ok=True)
-            dst = os.path.join(out_dir, fn)
-            shutil.copy2(src, dst)
+            shutil.copy2(src, os.path.join(out_dir, fn))
             copied_count += 1
             log(f"Zkopírován soubor: {fn} -> {out_dir}")
 
-    log(f"Celkem zkopírováno {copied_count} souborů.")
-    if copied_count == 0:
-        log("Nebyl nalezen žádný odpovídající soubor.")
+    log(f"Celkem zkopírováno {copied_count} souborů." if copied_count else "Nenalezeny žádné soubory.")
 
-# --- Kopírování složek podle Excelu (původní) ---
+# --- Kopírování složek ---
 def copy_first_media(src_dir, dest_dir):
     exts = [".jpg",".jpeg",".png",".gif",".bmp",".tif",".tiff",
             ".mp4",".avi",".mov",".mkv",".wmv",".flv"]
@@ -131,7 +116,7 @@ def copy_first_media(src_dir, dest_dir):
             shutil.copy2(os.path.join(src_dir, fn), os.path.join(dest_dir, fn))
             return
 
-def copy_folders_with_mapping(source_path, dest_path, mapping, copy_mode, flat_structure=False, root_mode=False, log=None):
+def copy_folders_with_mapping(source_path, dest_path, mapping, copy_mode, flat_structure=False, root_mode=False):
     unfound = set(mapping.keys())
     for root, dirs, _ in os.walk(source_path):
         for folder in dirs:
@@ -145,133 +130,111 @@ def copy_folders_with_mapping(source_path, dest_path, mapping, copy_mode, flat_s
                     out_dir = os.path.join(dest_path, folder)
                 else:
                     znacka, kategorie = mapping[folder]
-                    if not znacka:
-                        brand_dir = kategorie
-                        category_dir = None
-                    else:
-                        brand_dir = znacka
-                        category_dir = kategorie
-                    out_dir = (os.path.join(dest_path, brand_dir, category_dir, folder)
-                               if category_dir else os.path.join(dest_path, brand_dir, folder))
+                    out_dir = os.path.join(dest_path, znacka or "", kategorie or "", folder)
 
                 if copy_mode == "all":
                     shutil.copytree(src_dir, out_dir, dirs_exist_ok=True)
-                    log(f"Zkopírována CELÁ složka '{folder}' -> {out_dir}")
                 else:
                     copy_first_media(src_dir, out_dir)
-                    log(f"Zkopírován první soubor ze složky '{folder}' -> {out_dir}")
-
                 unfound.remove(folder)
     return unfound
 
-# --- Smazání obsahu složky ---
-def delete_folder_contents_safe(folder_path, errors_file_path, log=None):
-    if not os.path.isdir(folder_path):
-        return
-    for item in os.listdir(folder_path):
-        path = os.path.join(folder_path, item)
-        try:
-            if os.path.isdir(path):
-                shutil.rmtree(path)
-                log(f"Složka odstraněna: {path}")
-            else:
-                os.remove(path)
-                log(f"Soubor odstraněn: {path}")
-        except Exception as e:
-            log(f"Chyba při mazání '{path}': {e}")
-            with open(errors_file_path, 'a', encoding='utf-8') as ef:
-                ef.write(f"Chyba při mazání '{path}': {e}\n")
 
-# --- Hlavní část ---
-def main():
-    if getattr(sys, 'frozen', False):
-        script_dir = os.path.dirname(sys.executable)
-    else:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
+# --- GUI aplikace ---
+class App(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("Kopírování fotek podle Excelu")
+        self.geometry("550x380")
+        self.resizable(False, False)
+        self.configure(bg="#f5f5f5")
+        # vytvoření loggeru
+        self.script_dir = os.path.dirname(sys.executable if getattr(sys, 'frozen', False) else __file__)
+        self.log = setup_logger(self.script_dir)
+        self.create_widgets()
 
-    log = setup_logger(script_dir)
-    errors_file = os.path.join(script_dir, "delete_errors.txt")
-    if os.path.exists(errors_file):
-        os.remove(errors_file)
-    log("Spuštěn skript.")
+    def create_widgets(self):
+        main = ttk.Frame(self, padding=15)
+        main.pack(fill="both", expand=True)
 
-    while True:
-        print("Zvolte režim:\n 1 - Kopírovat celé složky\n 2 - Kopírovat první soubor\n 3 - Kopírovat fotky podle produktů z Excelu")
-        choice = input("Číslo: ").strip()
-        if choice in ("1", "2", "3"):
-            break
-        print("Neplatná volba. Zadejte 1, 2 nebo 3.\n")
+        # --- Sekce: režim ---
+        frame_mode = ttk.LabelFrame(main, text="Režim kopírování", padding=10)
+        frame_mode.grid(row=0, column=0, sticky="ew", pady=10)
+        self.mode_var = tk.StringVar(value="1")
+        ttk.Radiobutton(frame_mode, text="Celé složky", variable=self.mode_var, value="1").grid(row=0, column=0, padx=10)
+        ttk.Radiobutton(frame_mode, text="První soubor", variable=self.mode_var, value="2").grid(row=0, column=1, padx=10)
+        ttk.Radiobutton(frame_mode, text="Podle Excelu", variable=self.mode_var, value="3").grid(row=0, column=2, padx=10)
 
-    while True:
-        print("\nZdroj:\n 1 - Promo fotky\n 2 - Promo videa\n 3 - Vybrat složku dle vlastního výběru\n 4 - Aktuální produktové fotky")
-        sc = input("Číslo: ").strip()
-        if sc == "1":
-            source_path = SOURCE_PATH_PROMO_FOTO
-            break
-        elif sc == "2":
-            source_path = SOURCE_PATH_PROMO_VIDEA
-            break
-        elif sc == "3":
-            root = tk.Tk(); root.withdraw(); root.lift(); root.attributes("-topmost", True)
-            from tkinter import filedialog
-            chosen = filedialog.askdirectory(title="Vyberte zdrojovou složku")
-            root.destroy()
-            if chosen:
-                source_path = chosen
-                break
-            print("Nevybrána žádná složka. Zkuste to znovu.\n")
-        elif sc == "4":
-            source_path = SOURCE_PATH_ORIGINAL
-            break
+        # --- Sekce: zdroj ---
+        frame_source = ttk.LabelFrame(main, text="Zdrojová složka", padding=10)
+        frame_source.grid(row=1, column=0, sticky="ew", pady=10)
+        self.source_var = tk.StringVar(value="1")
+        ttk.Radiobutton(frame_source, text="Promo fotky", variable=self.source_var, value="1").grid(row=0, column=0, padx=10)
+        ttk.Radiobutton(frame_source, text="Promo videa", variable=self.source_var, value="2").grid(row=0, column=1, padx=10)
+        ttk.Radiobutton(frame_source, text="Vlastní složka", variable=self.source_var, value="3").grid(row=0, column=2, padx=10)
+        ttk.Radiobutton(frame_source, text="Produktové fotky", variable=self.source_var, value="4").grid(row=0, column=3, padx=10)
+
+        # --- Sekce: třídění ---
+        frame_sort = ttk.LabelFrame(main, text="Třídění souborů", padding=10)
+        frame_sort.grid(row=2, column=0, sticky="ew", pady=10)
+        self.sort_var = tk.StringVar(value="1")
+        ttk.Radiobutton(frame_sort, text="Podle struktury", variable=self.sort_var, value="1").grid(row=0, column=0, padx=10)
+        ttk.Radiobutton(frame_sort, text="Plochá struktura", variable=self.sort_var, value="2").grid(row=0, column=1, padx=10)
+        ttk.Radiobutton(frame_sort, text="Vše do root složky", variable=self.sort_var, value="3").grid(row=0, column=2, padx=10)
+
+        # --- Tlačítko spustit ---
+        frame_action = ttk.Frame(main, padding=10)
+        frame_action.grid(row=3, column=0, pady=20)
+        ttk.Button(frame_action, text="Spustit kopírování", command=self.run_copy).pack(padx=10, pady=5)
+
+    def run_copy(self):
+        mode = self.mode_var.get()
+        src_choice = self.source_var.get()
+        sort_choice = self.sort_var.get()
+
+        if src_choice == "1": source_path = SOURCE_PATH_PROMO_FOTO
+        elif src_choice == "2": source_path = SOURCE_PATH_PROMO_VIDEA
+        elif src_choice == "4": source_path = SOURCE_PATH_ORIGINAL
         else:
-            print("Neplatná volba. Zadejte 1, 2, 3 nebo 4.\n")
+            chosen = filedialog.askdirectory(title="Vyberte zdrojovou složku")
+            if not chosen: return
+            source_path = chosen
 
-    dest_path = os.path.join(script_dir, "foto_folders")
-    if os.path.isdir(dest_path):
-        delete_folder_contents_safe(dest_path, errors_file, log=log)
-    else:
+        dest_path = os.path.join(self.script_dir, "foto_folders")
         os.makedirs(dest_path, exist_ok=True)
+        excel_path = os.path.join(self.script_dir, "Export fotek z NAS.xlsx")
 
-    excel_path = os.path.join(script_dir, "Export fotek z NAS.xlsx")
-    if not os.path.isfile(excel_path):
-        log(f"Excel nenalezen: {excel_path}")
-        sys.exit(1)
+        if not os.path.isfile(excel_path):
+            messagebox.showerror("Chyba", f"Excel nebyl nalezen:\n{excel_path}")
+            self.log(f"Excel nenalezen: {excel_path}")
+            return
 
-    try:
-        mapping = get_mapping_from_excel(excel_path, require_structure=True)
-        log(f"Načten excel: {excel_path}")
-    except Exception as e:
-        log(f"Chyba při načítání Excelu: {e}")
-        sys.exit(1)
+        try:
+            mapping = get_mapping_from_excel(excel_path, require_structure=True)
+            self.log(f"Načten Excel: {excel_path}")
+        except Exception as e:
+            messagebox.showerror("Chyba při načítání Excelu", str(e))
+            self.log(f"Chyba při načítání Excelu: {e}")
+            return
 
-    while True:
-        print("\nChcete třídit podle struktury?\n 1 - Ano\n 2 - Ne\n 3 - Vše do root složky")
-        flat = input("Zadejte číslo: ").strip()
-        if flat in ("1", "2", "3"):
-            flat_structure = (flat == "2")
-            root_mode = (flat == "3")
-            break
-        print("Neplatná volba. Zadejte 1, 2 nebo 3.\n")
+        flat_structure = (sort_choice == "2")
+        root_mode = (sort_choice == "3")
 
-    if choice == "3":
-        copy_photos_by_excel(
-            source_path, dest_path, mapping, log,
-            flat_structure=flat_structure, root_mode=root_mode
-        )
-    else:
-        copy_mode = "all" if choice == "1" else "first"
-        unfound = copy_folders_with_mapping(
-            source_path, dest_path, mapping,
-            copy_mode, flat_structure, root_mode, log=log
-        )
-        if unfound:
-            uf = os.path.join(script_dir, "unfound_folders.txt")
-            with open(uf, "w", encoding="utf-8") as f:
-                for k in unfound:
-                    f.write(k + "\n")
-            log(f"Některé složky nebyly nalezeny. Seznam: {uf}")
+        if mode == "3":
+            copy_photos_by_excel(source_path, dest_path, mapping, flat_structure, root_mode, log=self.log)
+        else:
+            copy_mode = "all" if mode == "1" else "first"
+            unfound = copy_folders_with_mapping(source_path, dest_path, mapping, copy_mode, flat_structure, root_mode)
+            if unfound:
+                uf = os.path.join(self.script_dir, "unfound_folders.txt")
+                with open(uf, "w", encoding="utf-8") as f:
+                    for k in unfound: f.write(k + "\n")
+                self.log(f"Některé složky nebyly nalezeny. Seznam uložen: {uf}")
+                messagebox.showwarning("Upozornění", f"Některé složky nebyly nalezeny. Seznam uložen: {uf}")
 
-    log("Hotovo.")
+        self.log("Kopírování dokončeno.")
+        messagebox.showinfo("Hotovo", "Kopírování dokončeno.")
 
 if __name__ == "__main__":
-    main()
+    app = App()
+    app.mainloop()
