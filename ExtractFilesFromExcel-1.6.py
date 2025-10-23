@@ -1,3 +1,6 @@
+# -- Verze 1.9 Bez GUI --
+
+
 import os
 import sys
 import shutil
