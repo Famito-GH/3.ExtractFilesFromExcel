@@ -1,4 +1,4 @@
-# -- Verze 1.9 Bez GUI --
+# -- Verze 1.10 Filtr Tagů a Počtu produktů --
 
 import os
 import sys
@@ -88,9 +88,10 @@ def get_mapping_from_excel(excel_path, require_structure=True):
     return mapping
 
 # --- Kopírování fotek podle Excelu ---
-def copy_photos_by_excel(source_dir, dest_dir, mapping, flat_structure=False, root_mode=False, log=None, tag_to_find=None):
+def copy_photos_by_excel(source_dir, dest_dir, mapping, flat_structure=False, root_mode=False, log=None, tag_to_find=None, multi_choice=None):
     exts = [".jpg",".jpeg",".png",".gif",".bmp",".tif",".tiff",
             ".mp4",".avi",".mov",".mkv",".wmv",".flv"]
+
     os.makedirs(dest_dir, exist_ok=True)
     copied_count = 0
     mapping_lower = {str(k).strip().lower(): v for k, v in mapping.items()}
@@ -98,6 +99,12 @@ def copy_photos_by_excel(source_dir, dest_dir, mapping, flat_structure=False, ro
     for root, _, files in os.walk(source_dir):
         for fn in files:
             if not any(fn.lower().endswith(ext) for ext in exts):
+                continue
+
+            name_no_ext = os.path.splitext(fn)[0]
+            if multi_choice == "1" and ',' in name_no_ext: 
+                continue
+            if multi_choice == "2" and ',' not in name_no_ext: 
                 continue
 
             filepath = os.path.join(root, fn)
@@ -171,7 +178,7 @@ def has_tag(filepath, tag_to_find, log):
     return tag_lower in file_tags
 
 # --- Kopírování prvního média ---
-def copy_first_media(src_dir, dest_dir, log, tag_to_find=None):
+def copy_first_media(src_dir, dest_dir, log, tag_to_find=None, multi_choice=None):
     exts = [".jpg",".jpeg",".png",".gif",".bmp",".tif",".tiff",".mp4",".avi",".mov",".mkv",".wmv",".flv"]
     try:
         files = sorted(os.listdir(src_dir))
@@ -181,6 +188,12 @@ def copy_first_media(src_dir, dest_dir, log, tag_to_find=None):
         
     for fn in files:
         if any(fn.lower().endswith(ext) for ext in exts):
+            name_no_ext = os.path.splitext(fn)[0]
+            if multi_choice == "1" and ',' in name_no_ext: 
+                continue
+            if multi_choice == "2" and ',' not in name_no_ext: 
+                continue
+
             filepath = os.path.join(src_dir, fn)
             if tag_to_find and not has_tag(filepath, tag_to_find, log):
                 log(f"Přeskočeno: soubor '{fn}' neobsahuje štítek '{tag_to_find}'. Hledám dál...")
@@ -192,7 +205,7 @@ def copy_first_media(src_dir, dest_dir, log, tag_to_find=None):
             return
 
 # --- Kopírování složek podle Excelu ---
-def copy_folders_with_mapping(source_path, dest_path, mapping, copy_mode, flat_structure=False, root_mode=False, log=None, tag_to_find=None):
+def copy_folders_with_mapping(source_path, dest_path, mapping, copy_mode, flat_structure=False, root_mode=False, log=None, tag_to_find=None, multi_choice=None):
     unfound = set(mapping.keys())
     for root, dirs, _ in os.walk(source_path):
         for folder in list(dirs):
@@ -202,24 +215,30 @@ def copy_folders_with_mapping(source_path, dest_path, mapping, copy_mode, flat_s
                 out_dir = get_output_dir(dest_path, znacka, kategorie, folder, root_mode, flat_structure)
 
                 if copy_mode == "all":
-                    log(f"Kopíruji obsah složky '{folder}' do '{out_dir}' s filtrem na štítek.")
+                    log(f"Kopíruji obsah složky '{folder}' do '{out_dir}' s aktivními filtry.")
                     files_copied_in_folder = 0
                     for src_root, _, src_files in os.walk(src_dir):
-                        relative_path = os.path.relpath(src_root, src_dir)
-                        dest_subdir = os.path.join(out_dir, relative_path) if relative_path != '.' else out_dir
-                        os.makedirs(dest_subdir, exist_ok=True)
-                        
                         for file in src_files:
+                            name_no_ext = os.path.splitext(file)[0]
+                            if multi_choice == "1" and ',' in name_no_ext: 
+                                continue
+                            if multi_choice == "2" and ',' not in name_no_ext:
+                                continue
+
                             src_file_path = os.path.join(src_root, file)
                             if tag_to_find and not has_tag(src_file_path, tag_to_find, log):
                                 continue
+                            
+                            relative_path = os.path.relpath(src_root, src_dir)
+                            dest_subdir = os.path.join(out_dir, relative_path) if relative_path != '.' else out_dir
+                            os.makedirs(dest_subdir, exist_ok=True)
                             
                             shutil.copy2(src_file_path, os.path.join(dest_subdir, file))
                             files_copied_in_folder += 1
                     if files_copied_in_folder > 0:
                         log(f"Zkopírováno {files_copied_in_folder} souborů (splňujících filtr) ze složky '{folder}'.")
-                else: # copy_mode == "first"
-                    copy_first_media(src_dir, out_dir, log, tag_to_find=tag_to_find)
+                else: 
+                    copy_first_media(src_dir, out_dir, log, tag_to_find=tag_to_find, multi_choice=multi_choice)
                 
                 unfound.remove(folder)
                 dirs.remove(folder) 
@@ -235,10 +254,16 @@ if __name__ == "__main__":
     print("1) Celé složky")
     print("2) První soubor")
     print("3) Podle excelu")
-    mode = input("Zadejte číslo režimu: ").strip()
+    mode = input("Zadejte volbu: ").strip()
     if mode not in ["1", "2", "3"]:
         log("Neplatná volba režimu.")
         sys.exit(1)
+    
+    print("\nZvol množství produktů na fotce")
+    print("1) Jeden produkt")
+    print("2) Více produktů")
+    print("3) Nezáleží na počtu")
+    multi_choice = input("Zadejte volbu: ").strip()
     
     tag_to_find = None
     print("\nChcete použít filtr podle štítků?")
@@ -265,7 +290,7 @@ if __name__ == "__main__":
     print("2) Promo videa")
     print("3) Vlastní složka")
     print("4) Produktové fotky")
-    src_choice = input("Zadejte číslo zdroje: ").strip()
+    src_choice = input("Zadejte volbu: ").strip()
 
     if src_choice == "1": source_path = SOURCE_PATH_PROMO_FOTO
     elif src_choice == "2": source_path = SOURCE_PATH_PROMO_VIDEA
@@ -307,10 +332,10 @@ if __name__ == "__main__":
         sys.exit(1)
 
     if mode == "3":
-        copy_photos_by_excel(source_path, dest_path, mapping, flat_structure, root_mode, log=log, tag_to_find=tag_to_find)
+        copy_photos_by_excel(source_path, dest_path, mapping, flat_structure, root_mode, log=log, tag_to_find=tag_to_find, multi_choice=multi_choice)
     else:
         copy_mode = "all" if mode == "1" else "first"
-        unfound = copy_folders_with_mapping(source_path, dest_path, mapping, copy_mode, flat_structure, root_mode, log=log, tag_to_find=tag_to_find)
+        unfound = copy_folders_with_mapping(source_path, dest_path, mapping, copy_mode, flat_structure, root_mode, log=log, tag_to_find=tag_to_find, multi_choice=multi_choice)
         if unfound:
             uf = os.path.join(script_dir, "unfound_folders.txt")
             with open(uf, "w", encoding="utf-8") as f:
