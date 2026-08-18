@@ -14,6 +14,14 @@ from enum import Enum
 from PIL import Image
 from PIL.IptcImagePlugin import getiptcinfo
 
+
+def get_app_dir() -> str:
+    """Vrati slozku, ve ktere se nachazi spustitelny soubor (.exe) nebo skript (.py)."""
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
 # ---------------------------------------------------------------------------
 # Konstanty a výchozí cesty
 # ---------------------------------------------------------------------------
@@ -105,9 +113,13 @@ def get_output_dir(dest_dir, znacka, kategorie, original_product, root_mode=Fals
         return dest_dir
     if flat_structure:
         return os.path.join(dest_dir, original_product)
-    z = znacka    or "Nezařazeno"
-    k = kategorie or "Nezařazeno"
-    return os.path.join(dest_dir, z, k, original_product)
+    if znacka:
+        k = kategorie or "Nezařazeno"
+        return os.path.join(dest_dir, znacka, k, original_product)
+    # Bez znacky – kategorie se pouzije jako prvni uroven (Kategorie / Produkt)
+    if kategorie:
+        return os.path.join(dest_dir, kategorie, original_product)
+    return os.path.join(dest_dir, original_product)
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +274,7 @@ def copy_first_media(src_dir, dest_dir, log, mapping_lower=None,
         files = sorted(os.listdir(src_dir))
     except Exception as e:
         log(f"Chyba při čtení složky {src_dir}: {e}")
-        return
+        return False
 
     for fn in files:
         if not is_media_file(fn):
@@ -293,7 +305,9 @@ def copy_first_media(src_dir, dest_dir, log, mapping_lower=None,
         os.makedirs(dest_dir, exist_ok=True)
         shutil.copy2(filepath, os.path.join(dest_dir, fn))
         log(f"Zkopírován první soubor '{fn}' ze složky '{os.path.basename(src_dir)}'.")
-        return
+        return True
+
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +317,7 @@ def copy_folders_with_mapping(source_path, dest_path, mapping, copy_mode,
                                flat_structure=False, root_mode=False,
                                log=None, tags=None, tag_mode="or", multi_choice=None):
     unfound       = set(mapping.keys())
+    total_copied  = 0
     mapping_lower = {k.strip().lower(): v for k, v in mapping.items()}
     tags          = tags or []
 
@@ -350,22 +365,24 @@ def copy_folders_with_mapping(source_path, dest_path, mapping, copy_mode,
                         os.makedirs(dest_sub, exist_ok=True)
                         shutil.copy2(src_file_path, os.path.join(dest_sub, file))
                         files_copied += 1
+                        total_copied += 1
 
                 if files_copied:
                     log(f"Zkopírováno {files_copied} souborů (splňujících filtr) ze složky '{folder}'.")
 
             else:  # copy_mode == "first"
-                copy_first_media(
+                if copy_first_media(
                     src_dir, out_dir, log,
                     mapping_lower=mapping_lower,
                     tags=tags, tag_mode=tag_mode,
                     multi_choice=multi_choice,
-                )
+                ):
+                    total_copied += 1
 
             unfound.discard(folder)
             dirs.remove(folder)
 
-    return unfound
+    return unfound, total_copied
 
 
 # ===========================================================================
@@ -386,7 +403,7 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("ExtractFilesFromExcel  v2.0")
+        self.title("ExtractFilesFromExcel  v2.1")
         self.geometry("900x720")
         self.minsize(820, 640)
         self.configure(bg=self.BG)
@@ -545,14 +562,17 @@ class App(tk.Tk):
         self.tag_enabled = tk.BooleanVar(value=False)
         ttk.Checkbutton(c3, text="Filtrovat podle štítků", variable=self.tag_enabled,
                         command=self._toggle_tag).pack(anchor="w")
-        ttk.Label(c3, text="Více štítků oddělte čárkou např: pánské, černá",
+
+        # Widgety skryte ve vychozim stavu
+        self._tag_widgets_frame = ttk.Frame(c3, style="Card.TFrame")
+
+        ttk.Label(self._tag_widgets_frame, text="Více štítků oddělte čárkou např: pánské, černá",
                   style="Dim.TLabel").pack(anchor="w", pady=(6, 2))
-        self.tag_entry = ttk.Entry(c3, width=50)
+        self.tag_entry = ttk.Entry(self._tag_widgets_frame, width=50)
         self.tag_entry.pack(anchor="w", ipady=4)
-        self.tag_entry.configure(state="disabled")
-        ttk.Label(c3, text="Logika filtrování:", style="Dim.TLabel").pack(anchor="w", pady=(8, 2))
+        ttk.Label(self._tag_widgets_frame, text="Logika filtrování:", style="Dim.TLabel").pack(anchor="w", pady=(8, 2))
         self.tag_mode_var = tk.StringVar(value="or")
-        tag_mode_row = ttk.Frame(c3, style="Card.TFrame")
+        tag_mode_row = ttk.Frame(self._tag_widgets_frame, style="Card.TFrame")
         tag_mode_row.pack(anchor="w")
         ttk.Radiobutton(tag_mode_row, text="Alespoň jeden štítek",
                         variable=self.tag_mode_var, value="or").pack(side="left", padx=(0, 12))
@@ -615,8 +635,10 @@ class App(tk.Tk):
     # Pomocne metody UI
     # -----------------------------------------------------------------------
     def _toggle_tag(self):
-        state = "normal" if self.tag_enabled.get() else "disabled"
-        self.tag_entry.configure(state=state)
+        if self.tag_enabled.get():
+            self._tag_widgets_frame.pack(anchor="w", fill="x")
+        else:
+            self._tag_widgets_frame.pack_forget()
 
     def _toggle_custom_path(self):
         state = "normal" if self.src_var.get() == "3" else "disabled"
@@ -639,7 +661,7 @@ class App(tk.Tk):
             self.excel_label.configure(text=f"✅ Excel: {os.path.basename(path)}", foreground=self.SUCCESS)
 
     def _auto_detect_excel(self):
-        script_dir = os.path.dirname(os.path.abspath(__file__))
+        script_dir = get_app_dir()
         for fn in os.listdir(script_dir):
             if fn.lower().endswith((".xlsx", ".xls", ".xlsm")):
                 path = os.path.join(script_dir, fn)
@@ -678,7 +700,7 @@ class App(tk.Tk):
         self.log_box.configure(state="disabled")
 
         # Zapis do souboru
-        script_dir = os.path.dirname(os.path.abspath(__file__))
+        script_dir = get_app_dir()
         log_file   = os.path.join(script_dir, "vypis_konzole.txt")
         with open(log_file, "a", encoding="utf-8") as f:
             f.write(line)
@@ -692,7 +714,7 @@ class App(tk.Tk):
         self.log_box.configure(state="disabled")
 
         # Priprav log soubor
-        script_dir = os.path.dirname(os.path.abspath(__file__))
+        script_dir = get_app_dir()
         log_file   = os.path.join(script_dir, "vypis_konzole.txt")
         if os.path.exists(log_file):
             os.remove(log_file)
@@ -704,7 +726,7 @@ class App(tk.Tk):
     # -----------------------------------------------------------------------
     def _run_copy(self):
         log = self._ui_log
-        script_dir = os.path.dirname(os.path.abspath(__file__))
+        script_dir = get_app_dir()
 
         # --- Validace vstupu ---
         excel_path = self.excel_path_var.get()
@@ -785,9 +807,10 @@ class App(tk.Tk):
                     tags=tags, tag_mode=tag_mode,
                     multi_choice=multi_choice,
                 )
+                log("✅ Kopírování dokončeno.")
             else:
                 copy_mode_str = "all" if mode == CopyMode.ALL_FOLDERS else "first"
-                unfound = copy_folders_with_mapping(
+                unfound, copied_count = copy_folders_with_mapping(
                     source_path, dest_path, mapping, copy_mode_str,
                     flat_structure=flat_structure,
                     root_mode=root_mode,
@@ -801,8 +824,7 @@ class App(tk.Tk):
                         for k in sorted(unfound):
                             f.write(k + "\n")
                     log(f"⚠  {len(unfound)} složek nebylo nalezeno. Seznam: unfound_folders.txt")
-
-            log("✅ Kopírování dokončeno.")
+                log(f"✅ Kopírování dokončeno. Celkem zkopírováno {copied_count} souborů.")
         except Exception as e:
             log(f"❌ Neočekávaná chyba: {e}")
         finally:
